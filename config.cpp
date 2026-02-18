@@ -23,7 +23,7 @@ void Config::save() {
     std::ofstream f(config_dir() + "/settings");
     if (!f) return;
     f << (int)settings.last_mode << ' ' << settings.tick_ms << '\n';
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 8; i++) {
         auto& sl = settings.slots[i];
         f << sl.human << ' ' << (int)sl.color << ' ' << sl.keyset
           << ' ' << (int)sl.diff << ' ' << sl.team << '\n';
@@ -33,17 +33,16 @@ void Config::save() {
 void Config::load() {
     std::ifstream f(config_dir() + "/settings");
     if (!f) {
-        settings.slots[0] = {true, PC_CYAN, 0, AI_MED, 0};
-        settings.slots[1] = {false, PC_MAGENTA, 1, AI_MED, 1};
-        settings.slots[2] = {false, PC_GREEN, 2, AI_MED, 0};
-        settings.slots[3] = {false, PC_YELLOW, 3, AI_HARD, 1};
+        PColor cols[] = {PC_CYAN,PC_MAGENTA,PC_GREEN,PC_YELLOW,PC_RED,PC_BLUE,PC_WHITE,PC_ORANGE};
+        for (int i=0;i<8;i++)
+            settings.slots[i] = {i==0, cols[i], 0, AI_MED, i/2};
         return;
     }
     int m; f >> m >> settings.tick_ms;
     settings.last_mode = (GameMode)m;
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 8; i++) {
         int h, c, k, d, t;
-        f >> h >> c >> k >> d >> t;
+        if (!(f >> h >> c >> k >> d >> t)) break;
         settings.slots[i] = {(bool)h, (PColor)c, k, (AIDiff)d, t};
     }
 }
@@ -56,12 +55,12 @@ void Config::save_scores() {
     if (!f) return;
     auto& s = score_data;
     f << s.total_wins << ' ' << s.best_streak << ' ' << s.current_streak
-      << ' ' << s.rounds_played << ' ' << s.best_time << '\n';
+      << ' ' << s.rounds_played << ' ' << s.best_time << ' ' << s.best_endless << '\n';
 }
 
 void Config::load_scores() {
     std::ifstream f(config_dir() + "/scores");
     if (!f) return;
     f >> score_data.total_wins >> score_data.best_streak >> score_data.current_streak
-      >> score_data.rounds_played >> score_data.best_time;
+      >> score_data.rounds_played >> score_data.best_time >> score_data.best_endless;
 }

@@ -2,6 +2,6 @@
 #include "types.h"
 
 namespace Game {
-    // returns index of winner (0-3), or -1 for draw
-    int run(GameMode mode, Slot slots[4]);
+    // standard modes: returns winner index or -1
+    int run(GameMode mode, Slot slots[8]);
 }

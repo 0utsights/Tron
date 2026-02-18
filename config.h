@@ -7,7 +7,7 @@ namespace Config {
     struct Settings {
         GameMode last_mode = MODE_1V1;
         int      tick_ms   = 55;
-        Slot     slots[4];
+        Slot     slots[8];
     };
 
     Settings& get();
