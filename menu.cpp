@@ -44,30 +44,47 @@ static void draw_box(int y, int x, int h, int w, int pair=CP_WALL) {
 }
 
 static const char* title_art[] = {
-    " ▀▀█▀▀ █▀▀█ █▀▀█ █▀▀▄ ",
-    "   █   █▄▄▀ █  █ █  █ ",
-    "   █   █  █ █▄▄█ █  █ ",
+    " _____ ____   ___  _   _ ",
+    "|_   _|  _ \\ / _ \\| \\ | |",
+    "  | | | |_) | | | |  \\| |",
+    "  | | |  _ <| |_| | |\\  |",
+    "  |_| |_| \\_\\\\___/|_| \\_|",
     nullptr
 };
 
 static void draw_title() {
-    int sy = 2;
+    int sy = 1;
     for (int i=0; title_art[i]; i++)
         center(sy+i, title_art[i], CP_TITLE, true);
 }
 
-// ── Generic vertical menu selector ────────────────────────
+// ── Menu item with description ────────────────────────────
 
-static int vmenu(int y, const std::vector<const char*>& items, int sel=0) {
+struct MenuItem {
+    const char* label;
+    const char* desc;
+};
+
+// Generic vertical menu with descriptions below selected item
+static int vmenu(int y, const std::vector<MenuItem>& items, int sel=0) {
     keypad(stdscr, TRUE);
     timeout(-1);
     while (true) {
         for (int i=0; i<(int)items.size(); i++) {
+            // clear the line first
+            move(y + i, 0); clrtoeol();
             if (i==sel) {
-                center(y+i, items[i], CP_SEL, true);
+                center(y+i, items[i].label, CP_SEL, true);
             } else {
-                center(y+i, items[i], CP_HUD, false);
+                center(y+i, items[i].label, CP_HUD, false);
             }
+        }
+        // description area: clear and draw
+        int desc_y = y + (int)items.size() + 1;
+        move(desc_y, 0); clrtoeol();
+        move(desc_y+1, 0); clrtoeol();
+        if (items[sel].desc) {
+            center(desc_y, items[sel].desc, CP_DIM, false);
         }
         refresh();
         int ch = getch();
@@ -85,8 +102,14 @@ enum TitleOpt { T_QUICK, T_CUSTOM, T_SCORES, T_SETTINGS, T_QUIT };
 static int title_screen() {
     erase();
     draw_title();
-    center(7, "── Light Cycles ──", CP_DIM);
-    return vmenu(10, {"  Quick Play  ","  Custom Game  ","  High Scores  ","  Settings  ","  Quit  "});
+    center(7, "-- Light Cycles --", CP_DIM);
+    return vmenu(9, {
+        {"  Quick Play  ",   "Jump in with your last settings"},
+        {"  Custom Game  ",  "Pick mode, players, colors, and controls"},
+        {"  High Scores  ",  "View your wins, streaks, and best times"},
+        {"  Settings  ",     "Adjust game speed and preferences"},
+        {"  Quit  ",         "See you on the grid"},
+    });
 }
 
 // ── Mode select ───────────────────────────────────────────
@@ -94,8 +117,12 @@ static int title_screen() {
 static int mode_select() {
     erase();
     draw_title();
-    center(7, "── Select Mode ──", CP_DIM);
-    return vmenu(10, {"  1v1  ","  FFA (4 players)  ","  2v2 Teams  "});
+    center(7, "-- Select Mode --", CP_DIM);
+    return vmenu(9, {
+        {"  1v1  ",              "Classic duel - you vs one opponent"},
+        {"  FFA (4 players)  ",  "Free for all - last one standing wins"},
+        {"  2v2 Teams  ",        "Team up - teammates can cross each other's trails"},
+    });
 }
 
 // ── Lobby ─────────────────────────────────────────────────
