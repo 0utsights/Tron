@@ -1,11 +1,11 @@
-# tron
+# Tron
 
-Terminal Tron Light Cycles. C++ / ncurses.
+Terminal Tron C++ / ncurses.
 
 ## Setup
 
 ```
-sudo pacman -S ncurses   # arch
+sudo pacman -S ncurses   # arch linux users
 make
 ./tron
 ```
@@ -14,17 +14,16 @@ make
 
 ```
 ./tron          # open the menu
-./tron auto     # jump straight into autotron (screensaver mode)
-./tron a        # same thing, shorter
+./tron auto | ./tron a    # jump straight into autotron (screensaver mode)
 ```
 
 ## Modes
 
-- **1v1** — 1-2 humans, rest AI
-- **FFA** — 4 players, up to 2 human
-- **2v2** — teams of 2, teammates pass through each other's trails
+- **1v1** — 1v1 with a friend or an AI
+- **FFA** — 4 players, up to 2 human players
+- **2v2** — teams of 2, teammates pass through each other's trails (can play solo with an AI or with a friend against AIs)
 - **Endless** — 1 human vs 7 AI. AI respawn when killed, you don't. Survive as long as you can.
-- **AutoTron** — 6 AI duke it out endlessly. Pure eye candy. Dead players flash out and respawn.
+- **AutoTron** — Automated Tron in your terminal for visual pleasure
 
 ## Controls
 
