@@ -16,19 +16,15 @@ void Config::init() {
     load_scores();
 }
 
-// ── Settings ───────────────────────────────────────────────
-
 static Config::Settings settings;
-
 Config::Settings& Config::get() { return settings; }
 
 void Config::save() {
     std::ofstream f(config_dir() + "/settings");
     if (!f) return;
-    auto& s = settings;
-    f << (int)s.last_mode << ' ' << s.tick_ms << '\n';
+    f << (int)settings.last_mode << ' ' << settings.tick_ms << '\n';
     for (int i = 0; i < 4; i++) {
-        auto& sl = s.slots[i];
+        auto& sl = settings.slots[i];
         f << sl.human << ' ' << (int)sl.color << ' ' << sl.keyset
           << ' ' << (int)sl.diff << ' ' << sl.team << '\n';
     }
@@ -37,7 +33,6 @@ void Config::save() {
 void Config::load() {
     std::ifstream f(config_dir() + "/settings");
     if (!f) {
-        // defaults
         settings.slots[0] = {true, PC_CYAN, 0, AI_MED, 0};
         settings.slots[1] = {false, PC_MAGENTA, 1, AI_MED, 1};
         settings.slots[2] = {false, PC_GREEN, 2, AI_MED, 0};
@@ -53,10 +48,7 @@ void Config::load() {
     }
 }
 
-// ── Scores ─────────────────────────────────────────────────
-
 static ScoreData score_data;
-
 ScoreData& Config::scores() { return score_data; }
 
 void Config::save_scores() {
@@ -70,7 +62,6 @@ void Config::save_scores() {
 void Config::load_scores() {
     std::ifstream f(config_dir() + "/scores");
     if (!f) return;
-    auto& s = score_data;
-    f >> s.total_wins >> s.best_streak >> s.current_streak
-      >> s.rounds_played >> s.best_time;
+    f >> score_data.total_wins >> score_data.best_streak >> score_data.current_streak
+      >> score_data.rounds_played >> score_data.best_time;
 }

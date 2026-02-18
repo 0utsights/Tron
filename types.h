@@ -3,7 +3,6 @@
 #include <string>
 #include <vector>
 
-// ── Directions ─────────────────────────────────────────
 enum Dir { D_UP=0, D_DOWN, D_LEFT, D_RIGHT, D_NONE };
 inline Dir dir_opposite(Dir d) {
     constexpr Dir opp[] = {D_DOWN, D_UP, D_RIGHT, D_LEFT, D_NONE};
@@ -12,14 +11,12 @@ inline Dir dir_opposite(Dir d) {
 inline int dir_dx(Dir d) { return d==D_LEFT?-1:d==D_RIGHT?1:0; }
 inline int dir_dy(Dir d) { return d==D_UP?-1:d==D_DOWN?1:0; }
 
-// ── Grid ───────────────────────────────────────────────
 enum Cell : uint8_t { C_EMPTY=0, C_WALL, C_P1, C_P2, C_P3, C_P4 };
 
-// ── Player colors ──────────────────────────────────────
 enum PColor { PC_CYAN=0, PC_MAGENTA, PC_GREEN, PC_YELLOW, PC_COUNT };
 constexpr const char* pcolor_name[] = {"Cyan","Magenta","Green","Yellow"};
 
-// ncurses color pairs: trail=1..4, head=5..8, ui=9..12
+// ncurses color pairs: trail 1-4, head 5-8, ui 9-13
 constexpr int CP_TRAIL(int c) { return 1+c; }
 constexpr int CP_HEAD(int c)  { return 5+c; }
 constexpr int CP_WALL  = 9;
@@ -28,7 +25,6 @@ constexpr int CP_TITLE = 11;
 constexpr int CP_SEL   = 12;
 constexpr int CP_DIM   = 13;
 
-// ── Controls ───────────────────────────────────────────
 struct KeySet {
     int up, down, left, right;
     const char* name;
@@ -44,25 +40,21 @@ inline const std::vector<KeySet>& keysets() {
     return k;
 }
 
-// ── AI ─────────────────────────────────────────────────
 enum AIDiff { AI_EASY=0, AI_MED, AI_HARD };
 constexpr const char* diff_name[] = {"Easy","Medium","Hard"};
 
-// ── Game mode ──────────────────────────────────────────
 enum GameMode { MODE_1V1=0, MODE_FFA, MODE_2V2 };
 constexpr const char* mode_name[] = {"1v1","FFA (4 players)","2v2 Teams"};
 constexpr int mode_players[] = {2, 4, 4};
 
-// ── Player slot ────────────────────────────────────────
 struct Slot {
     bool human    = false;
     PColor color  = PC_CYAN;
-    int keyset    = 0;       // index into keysets()
+    int keyset    = 0;
     AIDiff diff   = AI_MED;
-    int team      = 0;       // 0 or 1 for 2v2
+    int team      = 0;
 };
 
-// ── Trail drawing chars ────────────────────────────────
 namespace Trail {
     constexpr const char* V  = "│";
     constexpr const char* H  = "─";
@@ -82,11 +74,10 @@ namespace Trail {
     }
 }
 
-// ── High score record ──────────────────────────────────
 struct ScoreData {
-    int total_wins    = 0;
-    int best_streak   = 0;
-    int current_streak= 0;
-    int rounds_played = 0;
-    double best_time  = 0.0;  // seconds survived, best single round
+    int total_wins     = 0;
+    int best_streak    = 0;
+    int current_streak = 0;
+    int rounds_played  = 0;
+    double best_time   = 0.0;
 };
