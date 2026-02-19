@@ -206,29 +206,44 @@ static void flash_trail(Player& p, bool bright) {
 }
 
 static void draw_hud(GameMode mode) {
-    attron(COLOR_PAIR(CP_HUD));
     move(GH, 0); clrtoeol();
-    std::string hud = " ";
+    int x = 1;
     for (int i=0; i<num_players; i++) {
-        char buf[32];
+        char buf[16];
         const char* type = players[i].slot->human ? "P" : "AI";
         const char* status = players[i].alive ? "●" :
                              players[i].active ? "~" : "✕";
-        snprintf(buf, 32, "%s%d%s ", type, i+1, status);
-        hud += buf;
-        if (mode==MODE_2V2 && i==1) hud += " vs ";
+        snprintf(buf, 16, "%s%d%s", type, i+1, status);
+        int pair = CP_TRAIL(players[i].slot->color);
+        attron(COLOR_PAIR(pair) | (players[i].alive ? A_BOLD : A_DIM));
+        mvaddstr(GH, x, buf);
+        attroff(COLOR_PAIR(pair) | (players[i].alive ? A_BOLD : A_DIM));
+        x += strlen(buf) + 1;
+        if (mode==MODE_2V2 && i==1) {
+            attron(COLOR_PAIR(CP_DIM));
+            mvaddstr(GH, x, "vs ");
+            attroff(COLOR_PAIR(CP_DIM));
+            x += 3;
+        }
     }
-    if (mode==MODE_AUTO) hud += " [Q]uit";
-    else hud += " [Q]uit [R]estart";
-    mvaddstr(GH, 0, hud.c_str());
-    attroff(COLOR_PAIR(CP_HUD));
+    attron(COLOR_PAIR(CP_DIM));
+    if (mode==MODE_AUTO) mvaddstr(GH, x+1, "[Q]uit");
+    else                 mvaddstr(GH, x+1, "[Q]uit [R]estart");
+    attroff(COLOR_PAIR(CP_DIM));
 }
 
 static void ai_think(Player& p, GameMode mode) {
     if (!p.alive || !p.active || p.slot->human) return;
     int team = p.slot->team;
-    int look    = (p.slot->diff==AI_EASY) ? 2 : (p.slot->diff==AI_MED) ? 5 : 12;
-    int inertia = (p.slot->diff==AI_EASY) ? 85 : (p.slot->diff==AI_MED) ? 70 : 50;
+    int look, inertia;
+    if (mode == MODE_AUTO) {
+        // cranked up for best visuals
+        look = 20; inertia = 30;
+    } else {
+        look    = (p.slot->diff==AI_EASY) ? 2 : (p.slot->diff==AI_MED) ? 5 : 12;
+        inertia = (p.slot->diff==AI_EASY) ? 85 : (p.slot->diff==AI_MED) ? 70 : 50;
+    }
+    bool do_perp = (p.slot->diff == AI_HARD || mode == MODE_AUTO);
 
     int nx = p.x+dir_dx(p.dir), ny = p.y+dir_dy(p.dir);
     if (!blocked_for(nx,ny,team,mode) && (rand()%100 < inertia)) return;
@@ -244,7 +259,7 @@ static void ai_think(Player& p, GameMode mode) {
             if (blocked_for(cx,cy,team,mode)) break;
             space++;
         }
-        if (p.slot->diff == AI_HARD && space > 0) {
+        if (do_perp && space > 0) {
             int cx2=p.x+dir_dx(dd), cy2=p.y+dir_dy(dd);
             for (int sd=0; sd<4; sd++) {
                 Dir perp=(Dir)sd;
@@ -342,7 +357,6 @@ int Game::run(GameMode mode, Slot slots[8]) {
     if (flash_toggle < 1) flash_toggle = 1;
     if (flash_ticks < 2)  flash_ticks = 2;
     if (respawn_ticks < flash_ticks + 2) respawn_ticks = flash_ticks + 2;
-    int label_ticks = 2000 / tick_ms; // labels visible for 2 seconds
 
     while (keep_playing) {
         grid_init();
@@ -361,16 +375,23 @@ int Game::run(GameMode mode, Slot slots[8]) {
         erase(); draw_border();
         for (int i=0; i<num_players; i++)
             if (players[i].active) draw_head(players[i]);
-        // set labels for initial spawn
-        for (int i=0; i<num_players; i++) {
-            if (wants_label(players[i], mode)) {
-                players[i].label_tick = 1;
+        // show "YOU" / "CPU" labels before the game starts
+        for (int i=0; i<num_players; i++)
+            if (wants_label(players[i], mode))
                 draw_label(players[i]);
-            }
-        }
         draw_hud(mode); refresh();
 
-        if (mode != MODE_AUTO) countdown();
+        if (mode != MODE_AUTO) {
+            countdown();
+            // erase all labels before first tick
+            for (int i=0; i<num_players; i++)
+                if (wants_label(players[i], mode))
+                    erase_label(players[i]);
+            // redraw heads in case erase_label clobbered them
+            for (int i=0; i<num_players; i++)
+                if (players[i].active) draw_head(players[i]);
+            refresh();
+        }
         timeout(0);
 
         struct timespec start;
@@ -421,7 +442,6 @@ int Game::run(GameMode mode, Slot slots[8]) {
                             } else {
                                 spawn_player(p);
                                 draw_head(p);
-                                if (wants_label(p, mode)) p.label_tick = tick;
                             }
                         }
                     }
@@ -466,19 +486,6 @@ int Game::run(GameMode mode, Slot slots[8]) {
                                  players[last_alive].slot->human?"Player":"CPU", last_alive+1);
                         show_result(buf); result=last_alive;
                     }
-                }
-            }
-
-            // label processing
-            for (int i=0; i<num_players; i++) {
-                Player& p = players[i];
-                if (p.label_tick < 0) continue;
-                int since_label = tick - p.label_tick;
-                if (since_label >= label_ticks || !p.alive) {
-                    erase_label(p);
-                    p.label_tick = -1;
-                } else {
-                    draw_label(p);
                 }
             }
 
