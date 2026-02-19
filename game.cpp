@@ -40,33 +40,37 @@ static void draw_border() {
     attroff(COLOR_PAIR(CP_WALL) | A_DIM);
 }
 
+// player states:
+//   alive=true,  active=true  -> moving
+//   alive=false, active=true  -> dead, trail flashing
+//   alive=false, active=false -> trail erased, waiting to respawn
 struct Player {
     int x, y;
     Dir dir;
     bool alive;
-    bool active;           // false = waiting to respawn
+    bool active;
     Slot* slot;
     Cell cell;
     int index;
-    int death_tick;        // tick when died (for respawn timing)
-    bool flash_phase;
-    std::vector<std::pair<int,int>> trail_cells; // track positions for cleanup
+    int death_tick; // -1 = not dead
+    std::vector<std::pair<int,int>> trail_cells;
 };
 
 static Player players[8];
 static int num_players;
 
 static void find_spawn(int &sx, int &sy, Dir &sd) {
-    // try random positions until we find a clear spot
-    for (int attempts=0; attempts<200; attempts++) {
-        sx = 3 + rand() % (GW-6);
-        sy = 3 + rand() % (GH-6);
-        if (grid[idx(sx,sy)] == C_EMPTY) {
-            // pick direction with most space
-            int dirs[] = {D_UP, D_DOWN, D_LEFT, D_RIGHT};
-            sd = (Dir)(dirs[rand()%4]);
-            int nx = sx+dir_dx(sd), ny = sy+dir_dy(sd);
-            if (grid[idx(nx,ny)] == C_EMPTY) return;
+    for (int attempts=0; attempts<500; attempts++) {
+        sx = 4 + rand() % (GW-8);
+        sy = 4 + rand() % (GH-8);
+        if (grid[idx(sx,sy)] != C_EMPTY) continue;
+        Dir dirs[] = {D_UP, D_DOWN, D_LEFT, D_RIGHT};
+        for (int d=0; d<4; d++) {
+            int nx = sx+dir_dx(dirs[d]), ny = sy+dir_dy(dirs[d]);
+            if (nx>0 && nx<GW-1 && ny>0 && ny<GH-1 && grid[idx(nx,ny)]==C_EMPTY) {
+                sd = dirs[d];
+                return;
+            }
         }
     }
     sx = GW/2; sy = GH/2; sd = D_RIGHT;
@@ -77,7 +81,7 @@ static void spawn_player(Player& p) {
     find_spawn(sx, sy, sd);
     p.x = sx; p.y = sy; p.dir = sd;
     p.alive = true; p.active = true;
-    p.death_tick = 0; p.flash_phase = false;
+    p.death_tick = -1;
     p.trail_cells.clear();
     grid[idx(sx,sy)] = p.cell;
     prev_dir[idx(sx,sy)] = sd;
@@ -86,7 +90,6 @@ static void spawn_player(Player& p) {
 
 static void spawn_players_fixed(GameMode mode, Slot slots[8]) {
     num_players = mode_players(mode);
-    // fixed symmetric spawns for standard modes
     struct { float fx, fy; Dir d; } pos[] = {
         {0.25f, 0.50f, D_RIGHT}, {0.75f, 0.50f, D_LEFT},
         {0.25f, 0.25f, D_RIGHT}, {0.75f, 0.25f, D_LEFT},
@@ -97,11 +100,10 @@ static void spawn_players_fixed(GameMode mode, Slot slots[8]) {
         Player& p = players[i];
         p.slot = &slots[i]; p.cell = (Cell)(C_P1+i); p.index = i;
         p.alive = true; p.active = true;
-        p.death_tick = 0; p.flash_phase = false;
+        p.death_tick = -1;
         p.trail_cells.clear();
         p.x = (int)(pos[i].fx * GW);
         p.y = (int)(pos[i].fy * GH);
-        // clamp inside borders
         if (p.x<=1) p.x=2;
         if (p.x>=GW-2) p.x=GW-3;
         if (p.y<=1) p.y=2;
@@ -113,7 +115,7 @@ static void spawn_players_fixed(GameMode mode, Slot slots[8]) {
     }
 }
 
-static void draw_trail(Player& p, Dir old_dir) {
+static void draw_trail_seg(Player& p, Dir old_dir) {
     int ox = p.x - dir_dx(p.dir);
     int oy = p.y - dir_dy(p.dir);
     if (ox>0 && ox<GW-1 && oy>0 && oy<GH-1) {
@@ -132,7 +134,6 @@ static void draw_head(Player& p) {
     attroff(COLOR_PAIR(CP_HEAD(p.slot->color)) | A_BOLD);
 }
 
-// erase a player's trail from grid and screen
 static void erase_trail(Player& p) {
     for (auto& [cx,cy] : p.trail_cells) {
         if (cx>0 && cx<GW-1 && cy>0 && cy<GH-1) {
@@ -144,31 +145,33 @@ static void erase_trail(Player& p) {
     p.trail_cells.clear();
 }
 
-// flash a dead player's trail
-static void flash_trail(Player& p, bool on) {
-    int pair = on ? CP_FLASH : CP_TRAIL(p.slot->color);
-    int attr = on ? (A_BOLD | A_BLINK) : A_DIM;
-    attron(COLOR_PAIR(pair) | attr);
-    for (auto& [cx,cy] : p.trail_cells) {
-        if (cx>0 && cx<GW-1 && cy>0 && cy<GH-1)
-            mvaddstr(cy, cx, "·");
+static void flash_trail(Player& p, bool bright) {
+    int pair = CP_TRAIL(p.slot->color);
+    if (bright) {
+        attron(COLOR_PAIR(pair) | A_BOLD);
+        for (auto& [cx,cy] : p.trail_cells)
+            if (cx>0 && cx<GW-1 && cy>0 && cy<GH-1)
+                mvaddstr(cy, cx, "█");
+        attroff(COLOR_PAIR(pair) | A_BOLD);
+    } else {
+        for (auto& [cx,cy] : p.trail_cells)
+            if (cx>0 && cx<GW-1 && cy>0 && cy<GH-1)
+                mvaddch(cy, cx, ' ');
     }
-    attroff(COLOR_PAIR(pair) | attr);
 }
 
-static void draw_hud(GameMode mode, int tick) {
+static void draw_hud(GameMode mode) {
     attron(COLOR_PAIR(CP_HUD));
     move(GH, 0); clrtoeol();
     std::string hud = " ";
     for (int i=0; i<num_players; i++) {
-        if (!players[i].active && !players[i].alive) continue;
         char buf[32];
         const char* type = players[i].slot->human ? "P" : "AI";
-        const char* status = players[i].alive ? "●" : "✕";
+        const char* status = players[i].alive ? "●" :
+                             players[i].active ? "~" : "✕";
         snprintf(buf, 32, "%s%d%s ", type, i+1, status);
         hud += buf;
         if (mode==MODE_2V2 && i==1) hud += " vs ";
-        else if (i<num_players-1) hud += " ";
     }
     if (mode==MODE_AUTO) hud += " [Q]uit";
     else hud += " [Q]uit [R]estart";
@@ -225,7 +228,7 @@ static void move_player(Player& p, GameMode mode) {
     grid[idx(nx,ny)] = p.cell;
     prev_dir[idx(nx,ny)] = p.dir;
     p.trail_cells.push_back({nx,ny});
-    draw_trail(p, old_dir);
+    draw_trail_seg(p, old_dir);
 }
 
 static int handle_input(GameMode mode) {
@@ -273,9 +276,6 @@ static void show_result(const char* msg) {
     refresh();
 }
 
-// ticks per second (roughly)
-static inline int tps(int tick_ms) { return 1000 / tick_ms; }
-
 int Game::run(GameMode mode, Slot slots[8]) {
     srand(time(nullptr));
     GW = COLS; GH = LINES - 1;
@@ -287,9 +287,16 @@ int Game::run(GameMode mode, Slot slots[8]) {
     bool keep_playing = true;
 
     bool respawning = (mode==MODE_ENDLESS || mode==MODE_AUTO);
-    int respawn_delay_ticks = (mode==MODE_AUTO) ? tps(Config::get().tick_ms)*3 :
-                                                   tps(Config::get().tick_ms)*10;
-    int flash_duration_ticks = tps(Config::get().tick_ms) * 2;
+
+    int tick_ms = Config::get().tick_ms;
+    int tick_us = tick_ms * 1000;
+    // timing in ticks
+    int flash_ticks   = (2000) / tick_ms;
+    int respawn_ticks = (mode==MODE_AUTO ? 3000 : 10000) / tick_ms;
+    int flash_toggle  = 250 / tick_ms;
+    if (flash_toggle < 1) flash_toggle = 1;
+    if (flash_ticks < 2)  flash_ticks = 2;
+    if (respawn_ticks < flash_ticks + 2) respawn_ticks = flash_ticks + 2;
 
     while (keep_playing) {
         grid_init();
@@ -308,70 +315,80 @@ int Game::run(GameMode mode, Slot slots[8]) {
         erase(); draw_border();
         for (int i=0; i<num_players; i++)
             if (players[i].active) draw_head(players[i]);
-        draw_hud(mode, 0); refresh();
+        draw_hud(mode); refresh();
 
         if (mode != MODE_AUTO) countdown();
         timeout(0);
 
         struct timespec start;
         clock_gettime(CLOCK_MONOTONIC, &start);
-        int tick_us = Config::get().tick_ms * 1000;
         bool round_over = false;
-        int tick = 0;
+        int tick = 1;
 
         while (!round_over) {
             int inp = handle_input(mode);
             if (inp == -1) { keep_playing=false; break; }
             if (inp == 1 && mode!=MODE_AUTO) break;
 
-            // respawn logic
-            if (respawning) {
-                for (int i=0; i<num_players; i++) {
-                    Player& p = players[i];
-                    if (p.alive || !p.active) continue;
-                    // just died this tick
-                    if (p.death_tick == 0) p.death_tick = tick;
-
-                    int since_death = tick - p.death_tick;
-                    // flash phase
-                    if (since_death < flash_duration_ticks) {
-                        bool phase = (since_death / (tps(Config::get().tick_ms)/4)) % 2 == 0;
-                        if (phase != p.flash_phase) {
-                            flash_trail(p, phase);
-                            p.flash_phase = phase;
-                        }
-                    }
-                    // erase trail after flash
-                    else if (since_death == flash_duration_ticks) {
-                        erase_trail(p);
-                        p.active = false;
-                    }
-                    // respawn after delay (skip human in endless - they stay dead)
-                    else if (since_death >= respawn_delay_ticks) {
-                        if (mode==MODE_ENDLESS && p.slot->human) {
-                            round_over = true; // human died = game over
-                        } else {
-                            spawn_player(p);
-                            draw_head(p);
-                        }
-                    }
-                }
-            }
-
+            // move
             for (int i=0; i<num_players; i++) ai_think(players[i], mode);
             for (int i=0; i<num_players; i++) move_player(players[i], mode);
 
-            // handle deaths this tick
+            // mark newly dead
             for (int i=0; i<num_players; i++) {
-                if (!players[i].alive && players[i].active && players[i].death_tick==0) {
-                    if (respawning) {
-                        players[i].death_tick = tick;
+                Player& p = players[i];
+                if (!p.alive && p.active && p.death_tick < 0)
+                    p.death_tick = tick;
+            }
+
+            // respawn processing
+            if (respawning) {
+                for (int i=0; i<num_players; i++) {
+                    Player& p = players[i];
+                    if (p.alive) continue;       // still kicking
+                    if (p.death_tick < 0) continue; // shouldn't happen but safety
+
+                    int since = tick - p.death_tick;
+
+                    if (p.active) {
+                        // trail still on screen, flash it
+                        if (since <= flash_ticks) {
+                            bool bright = ((since / flash_toggle) % 2) == 0;
+                            flash_trail(p, bright);
+                        } else {
+                            // done flashing, erase
+                            erase_trail(p);
+                            p.active = false;
+                        }
+                    } else {
+                        // trail gone, waiting to respawn
+                        if (since >= respawn_ticks) {
+                            if (mode==MODE_ENDLESS && p.slot->human) {
+                                // human doesn't respawn in endless
+                            } else {
+                                spawn_player(p);
+                                draw_head(p);
+                            }
+                        }
                     }
                 }
             }
 
-            // win condition for standard modes
-            if (!respawning) {
+            // win conditions
+            if (mode==MODE_ENDLESS) {
+                for (int i=0; i<num_players; i++) {
+                    if (players[i].slot->human && !players[i].alive && !round_over) {
+                        round_over = true;
+                        struct timespec now;
+                        clock_gettime(CLOCK_MONOTONIC, &now);
+                        double elapsed = (now.tv_sec-start.tv_sec)+(now.tv_nsec-start.tv_nsec)/1e9;
+                        char buf[48];
+                        snprintf(buf, 48, "  Survived %.1fs  ", elapsed);
+                        show_result(buf);
+                        result = -1;
+                    }
+                }
+            } else if (!respawning) {
                 int alive_count=0, last_alive=-1;
                 for (int i=0;i<num_players;i++)
                     if (players[i].alive) { alive_count++; last_alive=i; }
@@ -398,30 +415,13 @@ int Game::run(GameMode mode, Slot slots[8]) {
                 }
             }
 
-            // endless: check if human is dead
-            if (mode==MODE_ENDLESS) {
-                for (int i=0;i<num_players;i++) {
-                    if (players[i].slot->human && !players[i].alive) {
-                        round_over = true;
-                        struct timespec now;
-                        clock_gettime(CLOCK_MONOTONIC, &now);
-                        double elapsed = (now.tv_sec-start.tv_sec)+(now.tv_nsec-start.tv_nsec)/1e9;
-                        char buf[48];
-                        snprintf(buf, 48, "  Survived %.1fs  ", elapsed);
-                        show_result(buf);
-                        result = -1;
-                    }
-                }
-            }
-
             tick++;
-            draw_hud(mode, tick); refresh();
+            draw_hud(mode); refresh();
             usleep(tick_us);
         }
 
         if (!keep_playing) break;
 
-        // score tracking
         if (round_over) {
             struct timespec end;
             clock_gettime(CLOCK_MONOTONIC, &end);
@@ -449,10 +449,7 @@ int Game::run(GameMode mode, Slot slots[8]) {
             }
             Config::save_scores();
 
-            if (mode == MODE_AUTO) {
-                // auto just loops forever, no prompt
-                continue;
-            }
+            if (mode == MODE_AUTO) continue;
 
             timeout(-1);
             while (true) {
