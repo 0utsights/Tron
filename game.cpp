@@ -84,26 +84,19 @@ static void render_viewport() {
                 attroff(COLOR_PAIR(CP_WALL) | A_DIM);
             } else {
                 int pi = (int)c - (int)C_P1;
-                Dir cur_dir = prev_dir[idx(wx,wy)];
+                Dir my_dir = prev_dir[idx(wx,wy)];
 
-                // figure out the "incoming" direction by checking which
-                // neighbor with the same cell color points toward us
-                Dir in_dir = cur_dir;
-                // check all 4 neighbors for one that has the same cell
-                // and whose direction leads into this cell
-                for (int d=0; d<4; d++) {
-                    Dir dd = (Dir)d;
-                    int nx = wx - dir_dx(dd);
-                    int ny = wy - dir_dy(dd);
-                    if (nx>=0 && nx<GW && ny>=0 && ny<GH
-                        && grid[idx(nx,ny)] == c
-                        && prev_dir[idx(nx,ny)] == dd) {
-                        in_dir = dd;
-                        break;
-                    }
+                // look at the NEXT cell in this cell's direction
+                // corner(this_dir, next_dir) - same as draw_trail_seg
+                int fx = wx + dir_dx(my_dir);
+                int fy = wy + dir_dy(my_dir);
+                Dir next_dir = my_dir; // default: straight
+                if (fx>=0 && fx<GW && fy>=0 && fy<GH
+                    && grid[idx(fx,fy)] == c) {
+                    next_dir = prev_dir[idx(fx,fy)];
                 }
 
-                const char* ch = Trail::corner(in_dir, cur_dir);
+                const char* ch = Trail::corner(my_dir, next_dir);
                 attron(COLOR_PAIR(CP_TRAIL(pi)) | A_BOLD);
                 mvaddstr(sy, sx, ch);
                 attroff(COLOR_PAIR(CP_TRAIL(pi)) | A_BOLD);
