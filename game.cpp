@@ -72,7 +72,6 @@ static void render_viewport() {
             if (c == C_EMPTY) {
                 mvaddch(sy, sx, ' ');
             } else if (c == C_WALL) {
-                // draw appropriate wall char
                 bool top = (wy==0), bot = (wy==GH-1);
                 bool lft = (wx==0), rgt = (wx==GW-1);
                 attron(COLOR_PAIR(CP_WALL) | A_DIM);
@@ -84,13 +83,27 @@ static void render_viewport() {
                 else                 mvaddstr(sy,sx,"│");
                 attroff(COLOR_PAIR(CP_WALL) | A_DIM);
             } else {
-                // trail cell
                 int pi = (int)c - (int)C_P1;
-                Dir pd = prev_dir[idx(wx,wy)];
-                const char* ch = (pd==D_UP||pd==D_DOWN) ? Trail::V : Trail::H;
-                // check if this is a corner
-                // look at the next cell in the direction to see if it turns
-                // simplified: just use the stored direction
+                Dir cur_dir = prev_dir[idx(wx,wy)];
+
+                // figure out the "incoming" direction by checking which
+                // neighbor with the same cell color points toward us
+                Dir in_dir = cur_dir;
+                // check all 4 neighbors for one that has the same cell
+                // and whose direction leads into this cell
+                for (int d=0; d<4; d++) {
+                    Dir dd = (Dir)d;
+                    int nx = wx - dir_dx(dd);
+                    int ny = wy - dir_dy(dd);
+                    if (nx>=0 && nx<GW && ny>=0 && ny<GH
+                        && grid[idx(nx,ny)] == c
+                        && prev_dir[idx(nx,ny)] == dd) {
+                        in_dir = dd;
+                        break;
+                    }
+                }
+
+                const char* ch = Trail::corner(in_dir, cur_dir);
                 attron(COLOR_PAIR(CP_TRAIL(pi)) | A_BOLD);
                 mvaddstr(sy, sx, ch);
                 attroff(COLOR_PAIR(CP_TRAIL(pi)) | A_BOLD);
@@ -389,23 +402,39 @@ static void draw_hud(GameMode mode, int follow_idx) {
 static void ai_think(Player& p, GameMode mode) {
     if (!p.alive || !p.active || p.slot->human) return;
     int team = p.slot->team;
-    int look, inertia;
+    int look, inertia, aggression;
     if (mode == MODE_AUTO) {
-        look = 20; inertia = 30;
+        look = 20; inertia = 30; aggression = 40;
     } else {
         look    = (p.slot->diff==AI_EASY) ? 2 : (p.slot->diff==AI_MED) ? 5 : 12;
         inertia = (p.slot->diff==AI_EASY) ? 85 : (p.slot->diff==AI_MED) ? 70 : 50;
+        aggression = (p.slot->diff==AI_EASY) ? 5 : (p.slot->diff==AI_MED) ? 15 : 30;
     }
     bool do_perp = (p.slot->diff == AI_HARD || mode == MODE_AUTO);
 
+    // current direction safe?
     int nx = p.x+dir_dx(p.dir), ny = p.y+dir_dy(p.dir);
     if (!blocked_for(nx,ny,team,mode) && (rand()%100 < inertia)) return;
 
+    // find nearest other alive player
+    int target_x = -1, target_y = -1;
+    double nearest_dist = 1e9;
+    for (int i=0; i<num_players; i++) {
+        if (&players[i] == &p || !players[i].alive || !players[i].active) continue;
+        double dx = players[i].x - p.x;
+        double dy = players[i].y - p.y;
+        double d = dx*dx + dy*dy;
+        if (d < nearest_dist) { nearest_dist = d; target_x = players[i].x; target_y = players[i].y; }
+    }
+
+    // evaluate each direction
     Dir best = p.dir;
-    int best_space = -1;
+    int best_score = -99999;
     for (int d=0; d<4; d++) {
         Dir dd = (Dir)d;
         if (dd == dir_opposite(p.dir)) continue;
+
+        // space check (survival)
         int cx=p.x, cy=p.y, space=0;
         for (int s=0; s<look; s++) {
             cx+=dir_dx(dd); cy+=dir_dy(dd);
@@ -425,7 +454,22 @@ static void ai_think(Player& p, GameMode mode) {
                 }
             }
         }
-        if (space > best_space) { best_space=space; best=dd; }
+
+        // dead end = never go there
+        if (space == 0) continue;
+
+        // aggression bonus: prefer directions that move toward target
+        int seek_bonus = 0;
+        if (target_x >= 0 && rand()%100 < aggression) {
+            int step_x = p.x + dir_dx(dd);
+            int step_y = p.y + dir_dy(dd);
+            double old_dist = (p.x-target_x)*(p.x-target_x) + (p.y-target_y)*(p.y-target_y);
+            double new_dist = (step_x-target_x)*(step_x-target_x) + (step_y-target_y)*(step_y-target_y);
+            if (new_dist < old_dist) seek_bonus = 8;
+        }
+
+        int score = space + seek_bonus;
+        if (score > best_score) { best_score = score; best = dd; }
     }
     p.dir = best;
 }
