@@ -18,6 +18,24 @@ static bool use_camera;
 
 static Cell* grid;
 static Dir*  prev_dir;
+static uint8_t* trail_glyph; // cached glyph index per cell
+
+// glyph indices matching Trail:: constants
+enum TGlyph : uint8_t {
+    TG_NONE=0, TG_V, TG_H, TG_UL, TG_UR, TG_DL, TG_DR, TG_HD
+};
+static const char* tg_str[] = {
+    " ", Trail::V, Trail::H, Trail::UL, Trail::UR, Trail::DL, Trail::DR, Trail::HD
+};
+
+static uint8_t corner_glyph(Dir from, Dir to) {
+    if (from==to || from==D_NONE) return (to==D_UP||to==D_DOWN)?TG_V:TG_H;
+    if ((from==D_UP   &&to==D_RIGHT)||(from==D_LEFT &&to==D_DOWN))  return TG_UL;
+    if ((from==D_UP   &&to==D_LEFT) ||(from==D_RIGHT&&to==D_DOWN))  return TG_UR;
+    if ((from==D_DOWN &&to==D_RIGHT)||(from==D_LEFT &&to==D_UP))    return TG_DL;
+    if ((from==D_DOWN &&to==D_LEFT) ||(from==D_RIGHT&&to==D_UP))    return TG_DR;
+    return (to==D_UP||to==D_DOWN)?TG_V:TG_H;
+}
 
 static inline int idx(int x, int y) { return y*GW+x; }
 
@@ -35,7 +53,7 @@ static inline bool blocked_for(int x, int y, int team, GameMode mode) {
 
 static void grid_init() {
     std::memset(grid, C_EMPTY, GW*GH*sizeof(Cell));
-    for (int i=0; i<GW*GH; i++) prev_dir[i] = D_NONE;
+    for (int i=0; i<GW*GH; i++) { prev_dir[i] = D_NONE; trail_glyph[i] = TG_NONE; }
     for (int x=0;x<GW;x++) { grid[idx(x,0)]=C_WALL; grid[idx(x,GH-1)]=C_WALL; }
     for (int y=0;y<GH;y++) { grid[idx(0,y)]=C_WALL; grid[idx(GW-1,y)]=C_WALL; }
 }
@@ -58,24 +76,7 @@ static void center_cam(int wx, int wy) {
     if (cam_y + SH > GH) cam_y = GH - SH;
 }
 
-// neighbor-based trail glyph - no direction history dependency
-static const char* trail_char(int wx, int wy) {
-    Cell c = grid[idx(wx,wy)];
-    bool U = (wy>0    && grid[idx(wx,wy-1)]==c);
-    bool D = (wy<GH-1 && grid[idx(wx,wy+1)]==c);
-    bool L = (wx>0    && grid[idx(wx-1,wy)]==c);
-    bool R = (wx<GW-1 && grid[idx(wx+1,wy)]==c);
-
-    if (D && R && !U && !L) return Trail::UL;
-    if (D && L && !U && !R) return Trail::UR;
-    if (U && R && !D && !L) return Trail::DL;
-    if (U && L && !D && !R) return Trail::DR;
-    if (U || D)             return Trail::V;
-    if (L || R)             return Trail::H;
-    return Trail::HD; // isolated cell (head or single dot)
-}
-
-// full viewport redraw from grid state
+// full viewport redraw - reads cached glyphs
 static void render_viewport() {
     for (int sy=0; sy<SH; sy++) {
         for (int sx=0; sx<SW; sx++) {
@@ -101,7 +102,8 @@ static void render_viewport() {
                 attroff(COLOR_PAIR(CP_WALL) | A_DIM);
             } else {
                 int pi = (int)c - (int)C_P1;
-                const char* ch = trail_char(wx, wy);
+                uint8_t g = trail_glyph[idx(wx,wy)];
+                const char* ch = (g < sizeof(tg_str)/sizeof(tg_str[0])) ? tg_str[g] : Trail::HD;
                 attron(COLOR_PAIR(CP_TRAIL(pi)) | A_BOLD);
                 mvaddstr(sy, sx, ch);
                 attroff(COLOR_PAIR(CP_TRAIL(pi)) | A_BOLD);
@@ -163,6 +165,7 @@ static void spawn_player(Player& p) {
     p.trail_cells.clear();
     grid[idx(sx,sy)] = p.cell;
     prev_dir[idx(sx,sy)] = sd;
+    trail_glyph[idx(sx,sy)] = TG_HD;
     p.trail_cells.push_back({sx,sy});
 }
 
@@ -189,6 +192,7 @@ static void spawn_players_fixed(GameMode mode, Slot slots[8]) {
         p.dir = pos[i].d;
         grid[idx(p.x,p.y)] = p.cell;
         prev_dir[idx(p.x,p.y)] = p.dir;
+        trail_glyph[idx(p.x,p.y)] = TG_HD;
         p.trail_cells.push_back({p.x,p.y});
     }
 }
@@ -260,6 +264,7 @@ static void erase_trail(Player& p) {
         if (cx>0 && cx<GW-1 && cy>0 && cy<GH-1) {
             grid[idx(cx,cy)] = C_EMPTY;
             prev_dir[idx(cx,cy)] = D_NONE;
+            trail_glyph[idx(cx,cy)] = TG_NONE;
             if (!use_camera) mvaddch(cy, cx, ' ');
         }
     }
@@ -479,9 +484,15 @@ static void move_player(Player& p, GameMode mode) {
     if (blocked_for(nx, ny, p.slot->team, mode)) { p.alive=false; return; }
 
     Dir old_dir = prev_dir[idx(p.x, p.y)];
+    // cache the corner glyph at the old position (same calc as draw_trail_seg)
+    int ox = p.x, oy = p.y;
+    if (ox>0 && ox<GW-1 && oy>0 && oy<GH-1)
+        trail_glyph[idx(ox,oy)] = corner_glyph(old_dir, p.dir);
+
     p.x = nx; p.y = ny;
     grid[idx(nx,ny)] = p.cell;
     prev_dir[idx(nx,ny)] = p.dir;
+    trail_glyph[idx(nx,ny)] = TG_HD; // head marker (will be overwritten next move)
     p.trail_cells.push_back({nx,ny});
     // incremental draw only for fixed camera
     if (!use_camera) draw_trail_seg(p, old_dir);
@@ -578,6 +589,7 @@ int Game::run(GameMode mode, Slot slots[8]) {
 
     grid = new Cell[GW*GH];
     prev_dir = new Dir[GW*GH];
+    trail_glyph = new uint8_t[GW*GH];
     int result = -1;
     bool keep_playing = true;
 
@@ -835,5 +847,6 @@ int Game::run(GameMode mode, Slot slots[8]) {
 
     delete[] grid;
     delete[] prev_dir;
+    delete[] trail_glyph;
     return result;
 }
