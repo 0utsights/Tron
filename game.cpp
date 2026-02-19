@@ -58,6 +58,23 @@ static void center_cam(int wx, int wy) {
     if (cam_y + SH > GH) cam_y = GH - SH;
 }
 
+// neighbor-based trail glyph - no direction history dependency
+static const char* trail_char(int wx, int wy) {
+    Cell c = grid[idx(wx,wy)];
+    bool U = (wy>0    && grid[idx(wx,wy-1)]==c);
+    bool D = (wy<GH-1 && grid[idx(wx,wy+1)]==c);
+    bool L = (wx>0    && grid[idx(wx-1,wy)]==c);
+    bool R = (wx<GW-1 && grid[idx(wx+1,wy)]==c);
+
+    if (D && R && !U && !L) return Trail::UL;
+    if (D && L && !U && !R) return Trail::UR;
+    if (U && R && !D && !L) return Trail::DL;
+    if (U && L && !D && !R) return Trail::DR;
+    if (U || D)             return Trail::V;
+    if (L || R)             return Trail::H;
+    return Trail::HD; // isolated cell (head or single dot)
+}
+
 // full viewport redraw from grid state
 static void render_viewport() {
     for (int sy=0; sy<SH; sy++) {
@@ -84,19 +101,7 @@ static void render_viewport() {
                 attroff(COLOR_PAIR(CP_WALL) | A_DIM);
             } else {
                 int pi = (int)c - (int)C_P1;
-                Dir my_dir = prev_dir[idx(wx,wy)];
-
-                // look at the NEXT cell in this cell's direction
-                // corner(this_dir, next_dir) - same as draw_trail_seg
-                int fx = wx + dir_dx(my_dir);
-                int fy = wy + dir_dy(my_dir);
-                Dir next_dir = my_dir; // default: straight
-                if (fx>=0 && fx<GW && fy>=0 && fy<GH
-                    && grid[idx(fx,fy)] == c) {
-                    next_dir = prev_dir[idx(fx,fy)];
-                }
-
-                const char* ch = Trail::corner(my_dir, next_dir);
+                const char* ch = trail_char(wx, wy);
                 attron(COLOR_PAIR(CP_TRAIL(pi)) | A_BOLD);
                 mvaddstr(sy, sx, ch);
                 attroff(COLOR_PAIR(CP_TRAIL(pi)) | A_BOLD);
