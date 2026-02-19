@@ -19,7 +19,7 @@ int main(int argc, char* argv[]) {
         Slot slots[8];
         PColor cols[] = {PC_CYAN,PC_MAGENTA,PC_GREEN,PC_YELLOW,PC_RED,PC_BLUE,PC_WHITE,PC_ORANGE};
         for (int i=0; i<6; i++)
-            slots[i] = {false, cols[i], 0, AI_HARD, 0};
+            slots[i] = {false, cols[i], 0, AI_HARD, 1}; // team=1 = camera mode
         Game::run(mode, slots);
         endwin();
         return 0;

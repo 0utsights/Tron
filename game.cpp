@@ -3,10 +3,19 @@
 #include <cstring>
 #include <cstdlib>
 #include <ctime>
+#include <cmath>
 #include <unistd.h>
 #include <vector>
+#include <algorithm>
 
+// world grid (may be larger than screen)
 static int GW, GH;
+// screen/viewport size
+static int SW, SH;
+// camera top-left corner in world coords
+static int cam_x, cam_y;
+static bool use_camera;
+
 static Cell* grid;
 static Dir*  prev_dir;
 
@@ -31,6 +40,66 @@ static void grid_init() {
     for (int y=0;y<GH;y++) { grid[idx(0,y)]=C_WALL; grid[idx(GW-1,y)]=C_WALL; }
 }
 
+// world -> screen conversion
+static inline int scr_x(int wx) { return wx - cam_x; }
+static inline int scr_y(int wy) { return wy - cam_y; }
+static inline bool on_screen(int wx, int wy) {
+    int sx = scr_x(wx), sy = scr_y(wy);
+    return sx>=0 && sx<SW && sy>=0 && sy<SH;
+}
+
+// center camera on a world position
+static void center_cam(int wx, int wy) {
+    cam_x = wx - SW/2;
+    cam_y = wy - SH/2;
+    if (cam_x < 0) cam_x = 0;
+    if (cam_y < 0) cam_y = 0;
+    if (cam_x + SW > GW) cam_x = GW - SW;
+    if (cam_y + SH > GH) cam_y = GH - SH;
+}
+
+// full viewport redraw from grid state
+static void render_viewport() {
+    for (int sy=0; sy<SH; sy++) {
+        for (int sx=0; sx<SW; sx++) {
+            int wx = cam_x + sx;
+            int wy = cam_y + sy;
+            if (wx<0||wx>=GW||wy<0||wy>=GH) {
+                mvaddch(sy, sx, ' ');
+                continue;
+            }
+            Cell c = grid[idx(wx,wy)];
+            if (c == C_EMPTY) {
+                mvaddch(sy, sx, ' ');
+            } else if (c == C_WALL) {
+                // draw appropriate wall char
+                bool top = (wy==0), bot = (wy==GH-1);
+                bool lft = (wx==0), rgt = (wx==GW-1);
+                attron(COLOR_PAIR(CP_WALL) | A_DIM);
+                if (top && lft)      mvaddstr(sy,sx,"╭");
+                else if (top && rgt) mvaddstr(sy,sx,"╮");
+                else if (bot && lft) mvaddstr(sy,sx,"╰");
+                else if (bot && rgt) mvaddstr(sy,sx,"╯");
+                else if (top||bot)   mvaddstr(sy,sx,"─");
+                else                 mvaddstr(sy,sx,"│");
+                attroff(COLOR_PAIR(CP_WALL) | A_DIM);
+            } else {
+                // trail cell
+                int pi = (int)c - (int)C_P1;
+                Dir pd = prev_dir[idx(wx,wy)];
+                const char* ch = (pd==D_UP||pd==D_DOWN) ? Trail::V : Trail::H;
+                // check if this is a corner
+                // look at the next cell in the direction to see if it turns
+                // simplified: just use the stored direction
+                attron(COLOR_PAIR(CP_TRAIL(pi)) | A_BOLD);
+                mvaddstr(sy, sx, ch);
+                attroff(COLOR_PAIR(CP_TRAIL(pi)) | A_BOLD);
+            }
+        }
+    }
+}
+
+// fixed-camera border draw (for non-camera modes)
 static void draw_border() {
     attron(COLOR_PAIR(CP_WALL) | A_DIM);
     for (int x=0;x<GW;x++) { mvaddstr(0,x,"─"); mvaddstr(GH-1,x,"─"); }
@@ -40,10 +109,6 @@ static void draw_border() {
     attroff(COLOR_PAIR(CP_WALL) | A_DIM);
 }
 
-// player states:
-//   alive=true,  active=true  -> moving
-//   alive=false, active=true  -> dead, trail flashing
-//   alive=false, active=false -> trail erased, waiting to respawn
 struct Player {
     int x, y;
     Dir dir;
@@ -52,8 +117,8 @@ struct Player {
     Slot* slot;
     Cell cell;
     int index;
-    int death_tick; // -1 = not dead
-    int label_tick; // tick when label was set, -1 = no label
+    int death_tick;
+    int label_tick;
     std::vector<std::pair<int,int>> trail_cells;
 };
 
@@ -83,7 +148,7 @@ static void spawn_player(Player& p) {
     p.x = sx; p.y = sy; p.dir = sd;
     p.alive = true; p.active = true;
     p.death_tick = -1;
-    p.label_tick = -1; // set by game loop after spawn
+    p.label_tick = -1;
     p.trail_cells.clear();
     grid[idx(sx,sy)] = p.cell;
     prev_dir[idx(sx,sy)] = sd;
@@ -102,8 +167,7 @@ static void spawn_players_fixed(GameMode mode, Slot slots[8]) {
         Player& p = players[i];
         p.slot = &slots[i]; p.cell = (Cell)(C_P1+i); p.index = i;
         p.alive = true; p.active = true;
-        p.death_tick = -1;
-        p.label_tick = -1;
+        p.death_tick = -1; p.label_tick = -1;
         p.trail_cells.clear();
         p.x = (int)(pos[i].fx * GW);
         p.y = (int)(pos[i].fy * GH);
@@ -118,6 +182,7 @@ static void spawn_players_fixed(GameMode mode, Slot slots[8]) {
     }
 }
 
+// incremental trail draw (fixed camera only)
 static void draw_trail_seg(Player& p, Dir old_dir) {
     int ox = p.x - dir_dx(p.dir);
     int oy = p.y - dir_dy(p.dir);
@@ -131,50 +196,50 @@ static void draw_trail_seg(Player& p, Dir old_dir) {
     attroff(COLOR_PAIR(CP_HEAD(p.slot->color)) | A_BOLD);
 }
 
-static void draw_head(Player& p) {
-    attron(COLOR_PAIR(CP_HEAD(p.slot->color)) | A_BOLD);
-    mvaddstr(p.y, p.x, Trail::HD);
-    attroff(COLOR_PAIR(CP_HEAD(p.slot->color)) | A_BOLD);
+// draw head at screen position (works for both modes)
+static void draw_head_at(Player& p) {
+    int sx = use_camera ? scr_x(p.x) : p.x;
+    int sy = use_camera ? scr_y(p.y) : p.y;
+    if (sx>=0 && sx<SW && sy>=0 && sy<SH) {
+        attron(COLOR_PAIR(CP_HEAD(p.slot->color)) | A_BOLD);
+        mvaddstr(sy, sx, Trail::HD);
+        attroff(COLOR_PAIR(CP_HEAD(p.slot->color)) | A_BOLD);
+    }
 }
 
-// should this player get a label?
 static bool wants_label(Player& p, GameMode mode) {
     if (mode == MODE_AUTO) return false;
     if (p.slot->human) return true;
-    if (mode == MODE_1V1) return true; // label both in 1v1
+    if (mode == MODE_1V1) return true;
     return false;
 }
 
 static void draw_label(Player& p) {
     char buf[8];
-    if (p.slot->human)
-        snprintf(buf, sizeof(buf), "YOU");
-    else
-        snprintf(buf, sizeof(buf), "CPU");
-
-    int lx = p.x - (int)strlen(buf)/2;
-    int ly = p.y - 1;
-    if (ly < 1) ly = p.y + 1; // below if too close to top
-    if (lx < 1) lx = 1;
-    if (lx + (int)strlen(buf) >= GW-1) lx = GW - 2 - (int)strlen(buf);
-
+    snprintf(buf, sizeof(buf), p.slot->human ? "YOU" : "CPU");
+    int wx = p.x, wy = p.y;
+    int sx = (use_camera ? scr_x(wx) : wx) - (int)strlen(buf)/2;
+    int sy = (use_camera ? scr_y(wy) : wy) - 1;
+    if (sy < 0) sy += 2;
+    if (sx < 0) sx = 0;
+    if (sx + (int)strlen(buf) >= SW) sx = SW - 1 - (int)strlen(buf);
     attron(COLOR_PAIR(CP_TRAIL(p.slot->color)) | A_BOLD);
-    mvaddstr(ly, lx, buf);
+    mvaddstr(sy, sx, buf);
     attroff(COLOR_PAIR(CP_TRAIL(p.slot->color)) | A_BOLD);
 }
 
 static void erase_label(Player& p) {
-    // overwrite with spaces where label was
-    int lx = p.x - 1; // "YOU" or "CPU" = 3 chars
-    int ly = p.y - 1;
-    if (ly < 1) ly = p.y + 1;
-    if (lx < 1) lx = 1;
-    // erase a generous area since player may have moved
+    int wx = p.x, wy = p.y;
+    int sy = (use_camera ? scr_y(wy) : wy) - 1;
+    if (sy < 0) sy += 2;
     for (int dx = -2; dx <= 4; dx++) {
-        int ex = p.x + dx, ey = ly;
-        if (ex > 0 && ex < GW-1 && ey > 0 && ey < GH-1) {
-            if (grid[idx(ex,ey)] == C_EMPTY)
-                mvaddch(ey, ex, ' ');
+        int ex = (use_camera ? scr_x(wx) : wx) + dx;
+        if (ex >= 0 && ex < SW && sy >= 0 && sy < SH) {
+            // only clear if the underlying grid cell is empty
+            int gwx = (use_camera ? cam_x : 0) + ex;
+            int gwy = (use_camera ? cam_y : 0) + sy;
+            if (gwx>=0 && gwx<GW && gwy>=0 && gwy<GH && grid[idx(gwx,gwy)]==C_EMPTY)
+                mvaddch(sy, ex, ' ');
         }
     }
 }
@@ -184,7 +249,7 @@ static void erase_trail(Player& p) {
         if (cx>0 && cx<GW-1 && cy>0 && cy<GH-1) {
             grid[idx(cx,cy)] = C_EMPTY;
             prev_dir[idx(cx,cy)] = D_NONE;
-            mvaddch(cy, cx, ' ');
+            if (!use_camera) mvaddch(cy, cx, ' ');
         }
     }
     p.trail_cells.clear();
@@ -192,22 +257,111 @@ static void erase_trail(Player& p) {
 
 static void flash_trail(Player& p, bool bright) {
     int pair = CP_TRAIL(p.slot->color);
-    if (bright) {
-        attron(COLOR_PAIR(pair) | A_BOLD);
-        for (auto& [cx,cy] : p.trail_cells)
-            if (cx>0 && cx<GW-1 && cy>0 && cy<GH-1)
-                mvaddstr(cy, cx, "█");
-        attroff(COLOR_PAIR(pair) | A_BOLD);
-    } else {
-        for (auto& [cx,cy] : p.trail_cells)
-            if (cx>0 && cx<GW-1 && cy>0 && cy<GH-1)
-                mvaddch(cy, cx, ' ');
+    for (auto& [cx,cy] : p.trail_cells) {
+        if (cx<=0 || cx>=GW-1 || cy<=0 || cy>=GH-1) continue;
+        int sx = use_camera ? scr_x(cx) : cx;
+        int sy = use_camera ? scr_y(cy) : cy;
+        if (sx<0||sx>=SW||sy<0||sy>=SH) continue;
+        if (bright) {
+            attron(COLOR_PAIR(pair) | A_BOLD);
+            mvaddstr(sy, sx, "█");
+            attroff(COLOR_PAIR(pair) | A_BOLD);
+        } else {
+            mvaddch(sy, sx, ' ');
+        }
     }
 }
 
-static void draw_hud(GameMode mode) {
-    move(GH, 0); clrtoeol();
+// find the camera follow target for autotron
+static int find_follow_target() {
+    int best = -1, best_len = -1;
+    for (int i=0; i<num_players; i++) {
+        if (!players[i].alive || !players[i].active) continue;
+        int len = (int)players[i].trail_cells.size();
+        if (len > best_len) { best_len = len; best = i; }
+    }
+    // nobody alive? find first one that will respawn soonest (lowest death_tick)
+    if (best < 0) {
+        int earliest = 999999999;
+        for (int i=0; i<num_players; i++) {
+            if (players[i].death_tick >= 0 && players[i].death_tick < earliest) {
+                earliest = players[i].death_tick;
+                best = i;
+            }
+        }
+    }
+    // absolute fallback
+    if (best < 0) best = 0;
+    return best;
+}
+
+// draw proximity arrow to nearest alive enemy (endless only)
+static void draw_nearest_arrow(int follow_idx) {
+    Player& me = players[follow_idx];
+    if (!me.alive) return;
+
+    int nearest = -1;
+    double nearest_dist = 1e9;
+    for (int i=0; i<num_players; i++) {
+        if (i == follow_idx || !players[i].alive || !players[i].active) continue;
+        double dx = players[i].x - me.x;
+        double dy = players[i].y - me.y;
+        double d = sqrt(dx*dx + dy*dy);
+        if (d < nearest_dist) { nearest_dist = d; nearest = i; }
+    }
+    if (nearest < 0) return;
+
+    // direction from me to them
+    double dx = players[nearest].x - me.x;
+    double dy = players[nearest].y - me.y;
+
+    // normalize and place arrow near viewport edge
+    double len = sqrt(dx*dx + dy*dy);
+    if (len < 1) return;
+    dx /= len; dy /= len;
+
+    // arrow position: push toward edge of screen
+    int margin = 3;
+    int ax = SW/2 + (int)(dx * (SW/2 - margin));
+    int ay = SH/2 + (int)(dy * (SH/2 - margin));
+    // clamp
+    if (ax < margin) ax = margin;
+    if (ax >= SW-margin) ax = SW-margin-1;
+    if (ay < 1) ay = 1;
+    if (ay >= SH-1) ay = SH-1;
+
+    // pick arrow character
+    const char* arrow;
+    double angle = atan2(dy, dx);
+    if      (angle > -0.39 && angle <= 0.39)  arrow = "→";
+    else if (angle > 0.39  && angle <= 1.18)  arrow = "↘";
+    else if (angle > 1.18  && angle <= 1.96)  arrow = "↓";
+    else if (angle > 1.96  && angle <= 2.75)  arrow = "↙";
+    else if (angle > 2.75  || angle <= -2.75) arrow = "←";
+    else if (angle > -2.75 && angle <= -1.96) arrow = "↖";
+    else if (angle > -1.96 && angle <= -1.18) arrow = "↑";
+    else                                       arrow = "↗";
+
+    attron(COLOR_PAIR(CP_TRAIL(players[nearest].slot->color)) | A_BOLD);
+    mvaddstr(ay, ax, arrow);
+    attroff(COLOR_PAIR(CP_TRAIL(players[nearest].slot->color)) | A_BOLD);
+}
+
+static void draw_hud(GameMode mode, int follow_idx) {
+    int hud_y = use_camera ? SH : GH;
+    move(hud_y, 0); clrtoeol();
     int x = 1;
+
+    // in camera auto mode, show who we're following
+    if (use_camera && mode == MODE_AUTO && follow_idx >= 0) {
+        char fbuf[32];
+        snprintf(fbuf, 32, "[watching AI%d] ", follow_idx+1);
+        attron(COLOR_PAIR(CP_TRAIL(players[follow_idx].slot->color)) | A_DIM);
+        mvaddstr(hud_y, x, fbuf);
+        attroff(COLOR_PAIR(CP_TRAIL(players[follow_idx].slot->color)) | A_DIM);
+        x += strlen(fbuf);
+    }
+
     for (int i=0; i<num_players; i++) {
         char buf[16];
         const char* type = players[i].slot->human ? "P" : "AI";
@@ -216,19 +370,19 @@ static void draw_hud(GameMode mode) {
         snprintf(buf, 16, "%s%d%s", type, i+1, status);
         int pair = CP_TRAIL(players[i].slot->color);
         attron(COLOR_PAIR(pair) | (players[i].alive ? A_BOLD : A_DIM));
-        mvaddstr(GH, x, buf);
+        mvaddstr(hud_y, x, buf);
         attroff(COLOR_PAIR(pair) | (players[i].alive ? A_BOLD : A_DIM));
         x += strlen(buf) + 1;
         if (mode==MODE_2V2 && i==1) {
             attron(COLOR_PAIR(CP_DIM));
-            mvaddstr(GH, x, "vs ");
+            mvaddstr(hud_y, x, "vs ");
             attroff(COLOR_PAIR(CP_DIM));
             x += 3;
         }
     }
     attron(COLOR_PAIR(CP_DIM));
-    if (mode==MODE_AUTO) mvaddstr(GH, x+1, "[Q]uit");
-    else                 mvaddstr(GH, x+1, "[Q]uit [R]estart");
+    if (mode==MODE_AUTO) mvaddstr(hud_y, x+1, "[Q]uit");
+    else                 mvaddstr(hud_y, x+1, "[Q]uit [R]estart");
     attroff(COLOR_PAIR(CP_DIM));
 }
 
@@ -237,7 +391,6 @@ static void ai_think(Player& p, GameMode mode) {
     int team = p.slot->team;
     int look, inertia;
     if (mode == MODE_AUTO) {
-        // cranked up for best visuals
         look = 20; inertia = 30;
     } else {
         look    = (p.slot->diff==AI_EASY) ? 2 : (p.slot->diff==AI_MED) ? 5 : 12;
@@ -288,7 +441,8 @@ static void move_player(Player& p, GameMode mode) {
     grid[idx(nx,ny)] = p.cell;
     prev_dir[idx(nx,ny)] = p.dir;
     p.trail_cells.push_back({nx,ny});
-    draw_trail_seg(p, old_dir);
+    // incremental draw only for fixed camera
+    if (!use_camera) draw_trail_seg(p, old_dir);
 }
 
 static int handle_input(GameMode mode) {
@@ -310,36 +464,75 @@ static int handle_input(GameMode mode) {
     return 0;
 }
 
-static void countdown() {
+static void countdown_cam(int follow_idx) {
+    // camera mode countdown: render viewport centered on follow target
+    for (int i=3; i>0; i--) {
+        if (follow_idx >= 0) center_cam(players[follow_idx].x, players[follow_idx].y);
+        render_viewport();
+        // draw all heads
+        for (int p=0;p<num_players;p++)
+            if (players[p].active) draw_head_at(players[p]);
+        char buf[4]; snprintf(buf,4," %d ",i);
+        attron(COLOR_PAIR(CP_HUD)|A_BOLD);
+        mvaddstr(SH/2, SW/2-1, buf);
+        attroff(COLOR_PAIR(CP_HUD)|A_BOLD);
+        draw_hud(MODE_ENDLESS, follow_idx);
+        refresh(); napms(600);
+    }
+    attron(COLOR_PAIR(CP_HUD)|A_BOLD);
+    mvaddstr(SH/2, SW/2-2, " GO! ");
+    attroff(COLOR_PAIR(CP_HUD)|A_BOLD);
+    refresh(); napms(300);
+}
+
+static void countdown_fixed() {
+    int hh = use_camera ? SH : GH;
+    int ww = use_camera ? SW : GW;
     for (int i=3; i>0; i--) {
         char buf[4]; snprintf(buf,4," %d ",i);
         attron(COLOR_PAIR(CP_HUD)|A_BOLD);
-        mvaddstr(GH/2, GW/2-1, buf);
+        mvaddstr(hh/2, ww/2-1, buf);
         attroff(COLOR_PAIR(CP_HUD)|A_BOLD);
         refresh(); napms(600);
     }
     attron(COLOR_PAIR(CP_HUD)|A_BOLD);
-    mvaddstr(GH/2, GW/2-2, " GO! ");
+    mvaddstr(hh/2, ww/2-2, " GO! ");
     attroff(COLOR_PAIR(CP_HUD)|A_BOLD);
     refresh(); napms(300);
-    mvaddstr(GH/2, GW/2-2, "     ");
+    mvaddstr(hh/2, ww/2-2, "     ");
 }
 
 static void show_result(const char* msg) {
+    int hh = use_camera ? SH : GH;
+    int ww = use_camera ? SW : GW;
     attron(COLOR_PAIR(CP_HUD)|A_BOLD);
-    mvaddstr(GH/2, (GW-(int)strlen(msg))/2, msg);
+    mvaddstr(hh/2, (ww-(int)strlen(msg))/2, msg);
     attroff(COLOR_PAIR(CP_HUD)|A_BOLD);
     const char* sub = "[ R to replay | Q for menu ]";
     attron(COLOR_PAIR(CP_HUD));
-    mvaddstr(GH/2+2, (GW-(int)strlen(sub))/2, sub);
+    mvaddstr(hh/2+2, (ww-(int)strlen(sub))/2, sub);
     attroff(COLOR_PAIR(CP_HUD));
     refresh();
 }
 
 int Game::run(GameMode mode, Slot slots[8]) {
     srand(time(nullptr));
-    GW = COLS; GH = LINES - 1;
-    if (GW<30 || GH<16) return -1;
+    SW = COLS; SH = LINES - 1;
+    if (SW<30 || SH<16) return -1;
+
+    // decide grid size and camera mode
+    use_camera = (mode == MODE_ENDLESS || (mode == MODE_AUTO && slots[0].team == 1));
+    // slots[0].team is repurposed: 0=fixed, 1=camera for auto mode
+    // endless always uses camera
+    if (mode == MODE_ENDLESS) use_camera = true;
+
+    if (use_camera) {
+        GW = SW * 3; GH = SH * 3; // 3x terminal size
+        if (GW < 150) GW = 150;
+        if (GH < 80)  GH = 80;
+    } else {
+        GW = SW; GH = SH;
+    }
 
     grid = new Cell[GW*GH];
     prev_dir = new Dir[GW*GH];
@@ -350,13 +543,14 @@ int Game::run(GameMode mode, Slot slots[8]) {
 
     int tick_ms = Config::get().tick_ms;
     int tick_us = tick_ms * 1000;
-    // timing in ticks
-    int flash_ticks   = (2000) / tick_ms;
+    int flash_ticks   = 2000 / tick_ms;
     int respawn_ticks = (mode==MODE_AUTO ? 3000 : 10000) / tick_ms;
     int flash_toggle  = 250 / tick_ms;
     if (flash_toggle < 1) flash_toggle = 1;
-    if (flash_ticks < 2)  flash_ticks = 2;
+    if (flash_ticks < 2) flash_ticks = 2;
     if (respawn_ticks < flash_ticks + 2) respawn_ticks = flash_ticks + 2;
+
+    int follow_idx = 0;
 
     while (keep_playing) {
         grid_init();
@@ -372,24 +566,44 @@ int Game::run(GameMode mode, Slot slots[8]) {
             spawn_players_fixed(mode, slots);
         }
 
-        erase(); draw_border();
-        for (int i=0; i<num_players; i++)
-            if (players[i].active) draw_head(players[i]);
-        // show "YOU" / "CPU" labels before the game starts
-        for (int i=0; i<num_players; i++)
-            if (wants_label(players[i], mode))
-                draw_label(players[i]);
-        draw_hud(mode); refresh();
+        // find initial follow target
+        if (use_camera) {
+            if (mode == MODE_ENDLESS) {
+                // follow the human
+                for (int i=0;i<num_players;i++)
+                    if (players[i].slot->human) { follow_idx=i; break; }
+            } else {
+                follow_idx = find_follow_target();
+            }
+            center_cam(players[follow_idx].x, players[follow_idx].y);
+        }
+
+        erase();
+        if (use_camera) {
+            render_viewport();
+            for (int i=0;i<num_players;i++)
+                if (players[i].active) draw_head_at(players[i]);
+        } else {
+            draw_border();
+            for (int i=0;i<num_players;i++)
+                if (players[i].active) draw_head_at(players[i]);
+        }
+
+        // pre-game labels
+        for (int i=0;i<num_players;i++)
+            if (wants_label(players[i], mode)) draw_label(players[i]);
+        draw_hud(mode, follow_idx); refresh();
 
         if (mode != MODE_AUTO) {
-            countdown();
-            // erase all labels before first tick
-            for (int i=0; i<num_players; i++)
-                if (wants_label(players[i], mode))
-                    erase_label(players[i]);
-            // redraw heads in case erase_label clobbered them
-            for (int i=0; i<num_players; i++)
-                if (players[i].active) draw_head(players[i]);
+            if (use_camera)
+                countdown_cam(follow_idx);
+            else
+                countdown_fixed();
+            // erase labels
+            for (int i=0;i<num_players;i++)
+                if (wants_label(players[i], mode)) erase_label(players[i]);
+            for (int i=0;i<num_players;i++)
+                if (players[i].active) draw_head_at(players[i]);
             refresh();
         }
         timeout(0);
@@ -405,11 +619,11 @@ int Game::run(GameMode mode, Slot slots[8]) {
             if (inp == 1 && mode!=MODE_AUTO) break;
 
             // move
-            for (int i=0; i<num_players; i++) ai_think(players[i], mode);
-            for (int i=0; i<num_players; i++) move_player(players[i], mode);
+            for (int i=0;i<num_players;i++) ai_think(players[i], mode);
+            for (int i=0;i<num_players;i++) move_player(players[i], mode);
 
             // mark newly dead
-            for (int i=0; i<num_players; i++) {
+            for (int i=0;i<num_players;i++) {
                 Player& p = players[i];
                 if (!p.alive && p.active && p.death_tick < 0)
                     p.death_tick = tick;
@@ -417,40 +631,83 @@ int Game::run(GameMode mode, Slot slots[8]) {
 
             // respawn processing
             if (respawning) {
-                for (int i=0; i<num_players; i++) {
+                for (int i=0;i<num_players;i++) {
                     Player& p = players[i];
-                    if (p.alive) continue;       // still kicking
-                    if (p.death_tick < 0) continue; // shouldn't happen but safety
-
+                    if (p.alive) continue;
+                    if (p.death_tick < 0) continue;
                     int since = tick - p.death_tick;
 
                     if (p.active) {
-                        // trail still on screen, flash it
                         if (since <= flash_ticks) {
-                            bool bright = ((since / flash_toggle) % 2) == 0;
-                            flash_trail(p, bright);
+                            if (!use_camera) {
+                                bool bright = ((since / flash_toggle) % 2) == 0;
+                                flash_trail(p, bright);
+                            }
+                            // camera mode: flash handled in render_viewport below
                         } else {
-                            // done flashing, erase
                             erase_trail(p);
                             p.active = false;
                         }
                     } else {
-                        // trail gone, waiting to respawn
                         if (since >= respawn_ticks) {
                             if (mode==MODE_ENDLESS && p.slot->human) {
-                                // human doesn't respawn in endless
+                                // human stays dead
                             } else {
                                 spawn_player(p);
-                                draw_head(p);
                             }
                         }
                     }
                 }
             }
 
+            // update camera
+            if (use_camera) {
+                if (mode == MODE_AUTO) {
+                    // follow longest trail, switch if current target died
+                    if (!players[follow_idx].alive || !players[follow_idx].active)
+                        follow_idx = find_follow_target();
+                    else {
+                        // check if someone else has a longer trail
+                        int cur_len = (int)players[follow_idx].trail_cells.size();
+                        for (int i=0;i<num_players;i++) {
+                            if (!players[i].alive) continue;
+                            if ((int)players[i].trail_cells.size() > cur_len + 20) {
+                                follow_idx = i; break;
+                            }
+                        }
+                    }
+                }
+                // endless always follows the human
+                center_cam(players[follow_idx].x, players[follow_idx].y);
+                render_viewport();
+
+                // draw heads on top of viewport
+                for (int i=0;i<num_players;i++)
+                    if (players[i].alive && players[i].active)
+                        draw_head_at(players[i]);
+
+                // flash dead trails in camera mode
+                if (respawning) {
+                    for (int i=0;i<num_players;i++) {
+                        Player& p = players[i];
+                        if (!p.alive && p.active && p.death_tick >= 0) {
+                            int since = tick - p.death_tick;
+                            if (since <= flash_ticks) {
+                                bool bright = ((since / flash_toggle) % 2) == 0;
+                                flash_trail(p, bright);
+                            }
+                        }
+                    }
+                }
+
+                // proximity arrow in endless
+                if (mode == MODE_ENDLESS)
+                    draw_nearest_arrow(follow_idx);
+            }
+
             // win conditions
             if (mode==MODE_ENDLESS) {
-                for (int i=0; i<num_players; i++) {
+                for (int i=0;i<num_players;i++) {
                     if (players[i].slot->human && !players[i].alive && !round_over) {
                         round_over = true;
                         struct timespec now;
@@ -490,7 +747,7 @@ int Game::run(GameMode mode, Slot slots[8]) {
             }
 
             tick++;
-            draw_hud(mode); refresh();
+            draw_hud(mode, follow_idx); refresh();
             usleep(tick_us);
         }
 

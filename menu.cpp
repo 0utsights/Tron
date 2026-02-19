@@ -324,6 +324,16 @@ bool Menu::run(GameMode &mode, Slot slots[8]) {
         if (opt == T_AUTO) {
             mode = MODE_AUTO;
             setup_auto(slots);
+            // pick camera mode
+            erase(); draw_title();
+            center(7, "-- AutoTron View --", CP_DIM);
+            int cam = vmenu(9, {
+                {"  Follow Camera  ",  "Follows the player with the longest trail (default)"},
+                {"  Classic View  ",   "Fixed view, full grid fits on screen"},
+            });
+            if (cam < 0) continue;
+            // repurpose slot[0].team as camera flag: 1=camera, 0=fixed
+            for (int i=0;i<6;i++) slots[i].team = (cam == 0) ? 1 : 0;
             return true;
         }
 
